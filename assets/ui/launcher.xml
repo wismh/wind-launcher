@@ -69,6 +69,8 @@
                 <Button class="more-button" command="{binding toggleMenu}" content="···">
                   <Popup class="menu" open="{binding menuOpen}" placement="bottom-end">
                     <Button class="menu-item" command="{binding show}" content="Show in Explorer"/>
+                    <Button class="menu-item" if="{binding canAddSymbols}" command="{binding addSymbols}"
+                            content="{binding symbolsLabel}"/>
                     <Button class="menu-item" command="{binding remove}" content="{binding removeLabel}"/>
                   </Popup>
                   <Popup class="menu confirm" open="{binding confirmOpen}" placement="bottom-end">
@@ -112,6 +114,37 @@
           </ItemsControl>
         </ScrollView>
       </Stack>
+      <Stack class="page" direction="vertical" var-display="{binding optionsDisplay}">
+        <Stack class="page-header" direction="horizontal">
+          <Stack class="heading" direction="vertical">
+            <Label class="page-title" text="{binding optionsTitle}"/>
+            <Label class="path" text="Choose what comes with it. Modules can be added later from the SDKs page."/>
+          </Stack>
+        </Stack>
+        <Stack class="form" direction="vertical">
+          <Stack class="module" direction="horizontal">
+            <Stack class="module-text" direction="vertical">
+              <Label class="name" text="Editor SDK"/>
+              <Label class="path" text="{binding optionsSdkDetail}"/>
+            </Stack>
+            <Label class="module-note" text="Required"/>
+          </Stack>
+          <Checkbox class="module module-choice" if="{binding symbolsAvailable}" checked="{binding symbolsChecked}">
+            <Stack class="module-inner" direction="horizontal">
+              <Stack class="tick" checked="{binding symbolsChecked}"/>
+              <Stack class="module-text" direction="vertical">
+                <Label class="name" text="Debug symbols"/>
+                <Label class="path" text="{binding symbolsDetail}"/>
+              </Stack>
+            </Stack>
+          </Checkbox>
+          <Label class="hint" if="{binding symbolsMissing}" text="Debug symbols are not published for this release."/>
+          <Stack class="form-buttons" direction="horizontal">
+            <Button class="small-button" command="{binding closeInstallOptions}" content="Back"/>
+            <Button class="open-button" command="{binding confirmInstall}" content="Install"/>
+          </Stack>
+        </Stack>
+      </Stack>
       <Stack class="page" direction="vertical" var-display="{binding newProjectDisplay}">
         <Stack class="page-header" direction="horizontal">
           <Stack class="heading" direction="vertical">
@@ -146,7 +179,8 @@
         </Stack>
       </Stack>
       <Stack class="status-bar" direction="horizontal">
-        <Label class="status" text="{binding statusText}"/>
+        <Label class="status" text="{binding statusText}" var-limit="{binding statusLimit}"/>
+        <Label class="status install-status" text="{binding installText}"/>
       </Stack>
     </Stack>
   </Stack>

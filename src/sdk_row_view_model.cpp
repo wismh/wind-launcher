@@ -14,6 +14,7 @@ SdkRowViewModel::SdkRowViewModel(LauncherApp& app, std::size_t index, bool locat
     assets::ui::Launcher::Sdks::bind(*this);
     toggleMenu.bind_to<SdkRowViewModel, &SdkRowViewModel::toggle_menu>(*this);
     show.bind_to<SdkRowViewModel, &SdkRowViewModel::show_sdk>(*this);
+    addSymbols.bind_to<SdkRowViewModel, &SdkRowViewModel::add_symbols>(*this);
     remove.bind_to<SdkRowViewModel, &SdkRowViewModel::remove_sdk>(*this);
     confirmDelete.bind_to<SdkRowViewModel, &SdkRowViewModel::delete_sdk>(*this);
     cancelDelete.bind_to<SdkRowViewModel, &SdkRowViewModel::cancel_delete>(*this);
@@ -31,6 +32,11 @@ void SdkRowViewModel::toggle_menu() {
 void SdkRowViewModel::show_sdk() {
     menuOpen = false;
     app_->request(LauncherRequest{.kind = LauncherRequest::Kind::ShowSdk, .index = index_});
+}
+
+void SdkRowViewModel::add_symbols() {
+    menuOpen = false;
+    app_->request(LauncherRequest{.kind = LauncherRequest::Kind::AddSymbols, .index = index_});
 }
 
 void SdkRowViewModel::remove_sdk() {

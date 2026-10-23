@@ -35,6 +35,9 @@ std::string sdk_detail(const SdkEntry& sdk) {
     }
     detail += ", commit " + sdk.manifest.commit.substr(0, 8);
     detail += sdk.located ? ", located" : ", installed";
+    if (has_symbols(sdk)) {
+        detail += ", debug symbols";
+    }
     return detail;
 }
 
@@ -70,6 +73,8 @@ LauncherApp::LauncherApp(const engine::EngineServices& services)
     view_model_->showSdks.bind_to<LauncherApp, &LauncherApp::show_sdks>(*this);
     view_model_->installSdk.bind_to<LauncherApp, &LauncherApp::show_install_sdk>(*this);
     view_model_->closeInstallSdk.bind_to<LauncherApp, &LauncherApp::show_sdks>(*this);
+    view_model_->closeInstallOptions.bind_to<LauncherApp, &LauncherApp::close_install_options>(*this);
+    view_model_->confirmInstall.bind_to<LauncherApp, &LauncherApp::confirm_install>(*this);
     view_model_->addProject.bind_to<LauncherApp, &LauncherApp::add_project>(*this);
     view_model_->locateSdk.bind_to<LauncherApp, &LauncherApp::locate_sdk>(*this);
     view_model_->refreshAvailable.bind_to<LauncherApp, &LauncherApp::refresh_available>(*this);
@@ -145,15 +150,24 @@ void LauncherApp::show_install_sdk() {
     show_page(Page::InstallSdk);
 }
 
+void LauncherApp::close_install_options() {
+    show_page(Page::InstallSdk);
+}
+
+void LauncherApp::confirm_install() {
+    request(LauncherRequest{.kind = LauncherRequest::Kind::ConfirmInstall});
+}
+
 void LauncherApp::show_page(Page page) {
     page_ = page;
     const auto display = [&](Page shown) { return std::string(page == shown ? "block" : "none"); };
-    const bool sdk_page = page == Page::Sdks || page == Page::InstallSdk;
+    const bool sdk_page = page == Page::Sdks || page == Page::InstallSdk || page == Page::InstallOptions;
     view_model_->projectsTab = !sdk_page;
     view_model_->sdksTab = sdk_page;
     view_model_->projectsDisplay = display(Page::Projects);
     view_model_->sdksDisplay = display(Page::Sdks);
     view_model_->availableDisplay = display(Page::InstallSdk);
+    view_model_->optionsDisplay = display(Page::InstallOptions);
     view_model_->newProjectDisplay = display(Page::NewProject);
     view_model_->sdkPickerOpen = false;
 }
@@ -235,6 +249,7 @@ void LauncherApp::frame() {
         feed_revision_ = feed_->revision();
         rebuild_available();
         rebuild_project_rows();
+        rebuild_sdk_rows();
         update_available_note();
     }
     act(std::exchange(request_, LauncherRequest{}));
@@ -296,9 +311,17 @@ void LauncherApp::act(const LauncherRequest& request) {
             delete_sdk(request.index);
             break;
         case LauncherRequest::Kind::InstallSdk:
-            if (request.index < available_.size()) {
-                start_install(available_[request.index].release);
+            show_install_options(request.index);
+            break;
+        case LauncherRequest::Kind::ConfirmInstall:
+            if (const AvailableSdk* sdk = find_available(options_version_)) {
+                const bool symbols = sdk->release.symbols && view_model_->symbolsChecked.get();
+                start_install(sdk->release, InstallOptions{.symbols = symbols});
             }
+            show_page(Page::InstallSdk);
+            break;
+        case LauncherRequest::Kind::AddSymbols:
+            add_symbols(request.index);
             break;
         case LauncherRequest::Kind::InstallVersion:
             if (const AvailableSdk* sdk = find_available(request.version)) {
@@ -552,6 +575,24 @@ void LauncherApp::rebuild_project_rows() {
     view_model_->projects.set(std::move(project_rows));
 }
 
+void LauncherApp::rebuild_sdk_rows() {
+    std::vector<std::shared_ptr<SdkRowViewModel>> sdk_rows;
+    for (std::size_t i = 0; i < sdks_.size(); ++i) {
+        auto row = std::make_shared<SdkRowViewModel>(*this, i, sdks_[i].located);
+        row->version = sdks_[i].manifest.version;
+        row->detail = sdk_detail(sdks_[i]);
+        row->path = path_text(sdks_[i].root);
+        // Only an SDK under the install directory: a located one is the user's own build.
+        const AvailableSdk* offered = sdks_[i].located ? nullptr : find_available(sdks_[i].manifest.version);
+        if (offered != nullptr && offered->release.symbols && !has_symbols(sdks_[i]) && !installer_.running()) {
+            row->canAddSymbols = true;
+            row->symbolsLabel = "Add debug symbols (" + format_size(offered->release.symbols->size) + ")";
+        }
+        sdk_rows.push_back(std::move(row));
+    }
+    view_model_->sdks.set(std::move(sdk_rows));
+}
+
 void LauncherApp::refresh() {
     std::vector<std::string> problems;
     sdks_ = find_sdks(install_dir_, state_.sdks, problems);
@@ -566,15 +607,7 @@ void LauncherApp::refresh() {
     rebuild_available();
     rebuild_project_rows();
 
-    std::vector<std::shared_ptr<SdkRowViewModel>> sdk_rows;
-    for (std::size_t i = 0; i < sdks_.size(); ++i) {
-        auto row = std::make_shared<SdkRowViewModel>(*this, i, sdks_[i].located);
-        row->version = sdks_[i].manifest.version;
-        row->detail = sdk_detail(sdks_[i]);
-        row->path = path_text(sdks_[i].root);
-        sdk_rows.push_back(std::move(row));
-    }
-    view_model_->sdks.set(std::move(sdk_rows));
+    rebuild_sdk_rows();
     refresh_sdk_options();
 
     if (!data_dir_.empty() && !save_launcher_state(data_dir_ / kStateFile, state_)) {
@@ -588,20 +621,62 @@ const AvailableSdk* LauncherApp::find_available(std::string_view version) const 
     return found == available_.end() ? nullptr : &*found;
 }
 
-void LauncherApp::start_install(const SdkRelease& release) {
+void LauncherApp::show_install_options(std::size_t index) {
+    if (index >= available_.size()) {
+        return;
+    }
+    const SdkRelease& release = available_[index].release;
+    options_version_ = release.version;
+    view_model_->optionsTitle = "Install SDK " + release.version;
+    view_model_->optionsSdkDetail = release.size > 0 ? format_size(release.size) : std::string{};
+    view_model_->symbolsAvailable = release.symbols.has_value();
+    view_model_->symbolsMissing = !release.symbols.has_value();
+    view_model_->symbolsChecked = false;
+    view_model_->symbolsDetail = release.symbols ? format_size(release.symbols->size) + ", for debugging the engine"
+                                                 : std::string{};
+    show_page(Page::InstallOptions);
+}
+
+void LauncherApp::start_install(const SdkRelease& release, InstallOptions options) {
     // `release` points into available_, which rebuild_available() replaces below.
     const SdkRelease chosen = release;
     failed_version_.clear();
     failure_.clear();
-    const std::expected<void, std::string> started = installer_.start(chosen, install_dir_);
+    const std::expected<void, std::string> started = installer_.start(chosen, install_dir_, options);
     if (!started) {
         show_status(started.error());
         return;
     }
-    engine::log::info("Launcher: installing SDK " + chosen.version + " from " + chosen.archive_url);
+    engine::log::info("Launcher: installing SDK " + chosen.version + " from " + chosen.archive_url +
+            (options.symbols ? " with debug symbols" : ""));
     show_status("Installing SDK " + chosen.version + "…");
     rebuild_available();
     rebuild_project_rows();
+    rebuild_sdk_rows();
+}
+
+void LauncherApp::add_symbols(std::size_t index) {
+    if (index >= sdks_.size() || sdks_[index].located) {
+        return;
+    }
+    const AvailableSdk* offered = find_available(sdks_[index].manifest.version);
+    if (offered == nullptr) {
+        show_status("GitHub has no release of SDK " + sdks_[index].manifest.version + " to take its symbols from.");
+        return;
+    }
+    failed_version_.clear();
+    failure_.clear();
+    const std::expected<void, std::string> started = installer_.add_symbols(offered->release, sdks_[index].root);
+    if (!started) {
+        show_status(started.error());
+        return;
+    }
+    engine::log::info("Launcher: adding the debug symbols of SDK " + offered->release.version + " from " +
+            offered->release.symbols->url);
+    show_status("Adding the debug symbols of SDK " + offered->release.version + "…");
+    rebuild_available();
+    rebuild_project_rows();
+    rebuild_sdk_rows();
 }
 
 void LauncherApp::finish_install(const InstallOutcome& outcome) {
@@ -618,7 +693,10 @@ void LauncherApp::finish_install(const InstallOutcome& outcome) {
     } else {
         rebuild_available();
         rebuild_project_rows();
+        rebuild_sdk_rows();
     }
+    view_model_->installText = std::string{};
+    view_model_->statusLimit = std::string("100%");
     show_status(outcome.message);
 }
 
@@ -690,6 +768,11 @@ void LauncherApp::show_install_progress() {
             text = "Unpacking…";
             break;
     }
+    if (progress.symbols) {
+        text = "Debug symbols: " + text;
+    }
+    view_model_->installText = "SDK " + progress.version + ": " + text;
+    view_model_->statusLimit = std::string("calc(100% - 376px)");
     for (std::size_t i = 0; i < available_.size() && i < available_rows_.size(); ++i) {
         if (available_[i].release.version == progress.version) {
             available_rows_[i]->state = text;

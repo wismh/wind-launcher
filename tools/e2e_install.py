@@ -7,9 +7,11 @@
 The launcher has to be a Development build (the DebugGame configuration of the export build): only that has the CLI
 server wind-cli talks to. The launcher runs with a temporary home, so it reads and writes nothing of the real user's.
 It opens the SDKs page and its Install SDK page, waits for the Available list from GitHub, presses Install on a row
-(default: the newest), waits until the row says Installed, checks sdk-<version>/ on disk (sdk.toml, the editor, `wind_editor --batch` printing
-its usage error), then deletes the SDK from the Installed list and checks that the directory is gone. Screenshots of the
-page before, during, and after the install, and after the delete, go to --out. Exit code 0 when all of it held.
+(default: the newest), then Install on the modules page (with --symbols, after ticking Debug symbols), waits until the
+row says Installed, checks sdk-<version>/ on disk (sdk.toml, the editor, `wind_editor --batch` printing its usage error,
+and symbols.toml of the same build with --symbols, none without), then deletes the SDK from the Installed list and checks
+that the directory is gone. Screenshots of the modules page and of the page before, during, and after the install, and
+after the delete, go to --out. Exit code 0 when all of it held.
 
 Needs network access to api.github.com and github.com. GITHUB_TOKEN or GH_TOKEN in the environment lifts the API's rate
 limit, as it does for the launcher. Standard library only.
@@ -32,6 +34,8 @@ INSTALLED = [0, 1, 1, 1, 0]
 AVAILABLE = [0, 1, 2, 1, 0]
 INSTALL_SDK_BUTTON = [0, 1, 1, 0, 3]  # "Install SDK…" on the SDKs page, which opens the Install SDK page
 BACK_BUTTON = [0, 1, 2, 0, 2]  # "Back" on the Install SDK page
+OPTIONS_SYMBOLS = [0, 1, 3, 1, 1]  # the Debug symbols checkbox on the modules page, which Install on a row opens
+OPTIONS_INSTALL = [0, 1, 3, 1, 3, 1]  # "Install" on the modules page
 VERSION = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+[ab]?$")
 
 
@@ -130,6 +134,9 @@ def main(argv=None):
     parser.add_argument("--sdk-bin", required=True, help="the bin/ of an SDK: wind-cli, and the editor to try")
     parser.add_argument("--out", required=True, help="where the screenshots go")
     parser.add_argument("--version", help="the SDK to install; default the newest listed")
+    parser.add_argument("--symbols", action="store_true", help="install the debug symbols with it (a download of 100 MB)")
+    parser.add_argument("--add-symbols", action="store_true",
+                        help="after the install, add the debug symbols from the SDK's ··· menu (another 100 MB)")
     parser.add_argument("--timeout", type=int, default=900, help="seconds for the download and unpacking")
     args = parser.parse_args(argv)
 
@@ -161,6 +168,11 @@ def main(argv=None):
         # Install, and watch the row's state line.
         cli.click(AVAILABLE + [item, 2])
         log("pressed Install on %s" % version)
+        wait_for("the modules page", lambda: cli.text(OPTIONS_INSTALL) == "Install", 15)
+        if args.symbols:
+            cli.click(OPTIONS_SYMBOLS)
+        cli.shot(out, "0-modules.png")
+        cli.click(OPTIONS_INSTALL)
         seen = []
         shot_during = False
         deadline = time.monotonic() + args.timeout
@@ -177,7 +189,7 @@ def main(argv=None):
                 break
             if time.monotonic() > deadline:
                 raise Failure("the install did not finish in %d s (last state: %r)" % (args.timeout, state))
-            if state and not state.startswith(("Getting", "Downloading", "Checking", "Unpacking")):
+            if state and not state.startswith(("Getting", "Downloading", "Checking", "Unpacking", "Debug symbols")):
                 raise Failure("the install failed: %s" % state)
             time.sleep(0.15)
         cli.shot(out, "3-after-install.png")
@@ -196,6 +208,17 @@ def main(argv=None):
         if tried.returncode != 2:
             raise Failure("wind_editor --batch exited with %d, not 2: %s%s" % (tried.returncode, tried.stdout, tried.stderr))
         log("on disk: %s, editor usage error: %s" % (sdk, (tried.stderr or tried.stdout).strip().splitlines()[0]))
+        marker = sdk / "symbols.toml"
+        if args.symbols:
+            if not marker.is_file():
+                raise Failure("no %s: the debug symbols were not installed" % marker)
+            build_ids = [re.search(r'^build_id\s*=\s*"([^"]*)"', path.read_text(encoding="utf-8"), re.M)
+                         for path in (sdk / "sdk.toml", marker)]
+            if not all(build_ids) or build_ids[0].group(1) != build_ids[1].group(1):
+                raise Failure("the symbols are not of the SDK's build")
+            log("debug symbols: %s is of the SDK's build" % marker.name)
+        elif marker.exists():
+            raise Failure("%s is there although the symbols were not asked for" % marker)
         leftovers = [p.name for p in install_dir.iterdir() if p.name != "sdk-" + version]
         if leftovers:
             raise Failure("left in the install directory: %s" % leftovers)
@@ -204,9 +227,26 @@ def main(argv=None):
         cli.click(BACK_BUTTON)
         installed = wait_for("the Installed list", lambda: rows(cli, INSTALLED), 30)
         row = next(i for i, v in installed if v == version)
+        if args.add_symbols:
+            if args.symbols:
+                raise Failure("--add-symbols is for an SDK installed without them")
+            cli.click(INSTALLED + [row, 2])  # the ··· button
+            time.sleep(0.5)
+            label = cli.text(INSTALLED + [row, 2, 0, 1]) or ""
+            if not label.startswith("Add debug symbols"):
+                raise Failure("the ··· menu offers %r, not Add debug symbols" % label)
+            cli.click(INSTALLED + [row, 2, 0, 1])  # Add debug symbols
+            log("pressed %s" % label)
+            wait_for("the symbols to be added", lambda: (sdk / "symbols.toml").is_file(), args.timeout)
+            detail = wait_for("the SDK row to say it has them",
+                              lambda: "debug symbols" in (cli.text(INSTALLED + [row, 1, 0]) or ""), 30)
+            log("added: %s" % detail)
+            cli.shot(out, "5-symbols-added.png")
+            installed = wait_for("the Installed list", lambda: rows(cli, INSTALLED), 30)
+            row = next(i for i, v in installed if v == version)
         cli.click(INSTALLED + [row, 2])  # the ··· button
         time.sleep(0.5)
-        cli.click(INSTALLED + [row, 2, 0, 1])  # Delete…
+        cli.click(INSTALLED + [row, 2, 0, 2])  # Delete…
         time.sleep(0.5)
         cli.click(INSTALLED + [row, 2, 1, 2, 1])  # Delete, in the confirmation
         wait_for("the SDK directory to go", lambda: not sdk.exists(), 60)

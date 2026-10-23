@@ -35,6 +35,23 @@ struct Platform {
 // unparsable version, or a `-dev` one (nobody publishes those).
 [[nodiscard]] std::optional<std::string> sdk_asset_version(std::string_view asset_name, const Platform& platform);
 
+// `wind-sdk-symbols-<version>-<os>-<arch>.zip` (Windows) or `.tar.gz`: the debug information split off the SDK, unpacked
+// over it. Its checksum file adds `.sha256`.
+[[nodiscard]] std::string symbols_archive_name(std::string_view version, const Platform& platform);
+// `wind-sdk-symbols-<version>-<os>-<arch>`, the one directory that archive holds.
+[[nodiscard]] std::string symbols_top_directory(std::string_view version, const Platform& platform);
+
+// One archive of a release with its checksum file: the SDK itself, or an optional package over it.
+struct SdkPackage {
+    std::string name;
+    std::string url;
+    std::string checksum_url;
+    // The archive's size in bytes, from the API.
+    std::uint64_t size = 0;
+
+    friend bool operator==(const SdkPackage&, const SdkPackage&) = default;
+};
+
 // One SDK a GitHub release offers for this platform: its archive and the checksum file.
 struct SdkRelease {
     std::string version;
@@ -46,6 +63,9 @@ struct SdkRelease {
     std::string checksum_url;
     // The archive's size in bytes, from the API.
     std::uint64_t size = 0;
+    // The debug symbols of this SDK, when the release has them for this platform. Releases from before the split have
+    // none.
+    std::optional<SdkPackage> symbols;
 
     friend bool operator==(const SdkRelease&, const SdkRelease&) = default;
 };
@@ -57,7 +77,8 @@ struct ReleasePage {
 };
 
 // The SDKs of one page of `GET /repos/<repo>/releases`. Drafts, releases without the archive of `platform` or without
-// its `.sha256`, archives whose version does not parse, and download links that are not https are left out. A document
+// its `.sha256`, archives whose version does not parse, and download links that are not https are left out. The symbols
+// package is kept only with its `.sha256` and an https link; without them the SDK is listed with no symbols. A document
 // that is not a JSON array is an error.
 [[nodiscard]] std::expected<ReleasePage, std::string> parse_release_page(std::string_view json,
         const Platform& platform);

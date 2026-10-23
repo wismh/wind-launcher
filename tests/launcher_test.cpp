@@ -141,6 +141,40 @@ TEST(SdkCatalog, NoInstallDirectoryFindsOnlyLocatedSdks) {
     EXPECT_TRUE(problems.empty());
 }
 
+TEST(SdkCatalog, ReadsTheSymbolsMarker) {
+    const TempDir dir;
+    EXPECT_FALSE(launcher::read_symbols_marker(dir.path() / "none").has_value());
+    dir.write("a/symbols.toml",
+            "# Wind SDK symbols. Unpack over the SDK of the same version and build.\n"
+            "version = \"0.2.9a\"\nbuild_id = \"7e02eea2f11a6923\"\nplatform = \"windows\"\n");
+    const auto marker = launcher::read_symbols_marker(dir.path() / "a");
+    ASSERT_TRUE(marker.has_value());
+    EXPECT_EQ(marker->version, "0.2.9a");
+    EXPECT_EQ(marker->build_id, "7e02eea2f11a6923");
+
+    dir.write("b/symbols.toml", "version = \"0.2.9a\"\n");
+    EXPECT_FALSE(launcher::read_symbols_marker(dir.path() / "b").has_value()) << "no build_id";
+    dir.write("c/symbols.toml", "version_x = \"1\"\nversion = \"0.2.9a\"\nbuild_id = \"x\"");
+    EXPECT_EQ(launcher::read_symbols_marker(dir.path() / "c")->version, "0.2.9a") << "a look-alike key is skipped";
+    dir.write("d/symbols.toml", "[table]\nversion = \"0.2.9a\"\nbuild_id = \"x\"\n");
+    EXPECT_FALSE(launcher::read_symbols_marker(dir.path() / "d").has_value()) << "only top-level keys";
+}
+
+TEST(SdkCatalog, AnSdkHasItsSymbolsOnlyWhenTheMarkerIsOfItsBuild) {
+    const TempDir dir;
+    dir.sdk("Sdks/sdk-0.1.2a", "0.1.2a", false);
+    std::vector<std::string> problems;
+    const auto find = [&] { return launcher::find_sdks(dir.path() / "Sdks", {}, problems).at(0); };
+    EXPECT_FALSE(launcher::has_symbols(find())) << "no marker";
+
+    dir.write("Sdks/sdk-0.1.2a/symbols.toml", "version = \"0.1.2a\"\nbuild_id = \"aa\"\n");
+    EXPECT_TRUE(launcher::has_symbols(find()));
+    dir.write("Sdks/sdk-0.1.2a/symbols.toml", "version = \"0.1.2a\"\nbuild_id = \"bb\"\n");
+    EXPECT_FALSE(launcher::has_symbols(find())) << "another build";
+    dir.write("Sdks/sdk-0.1.2a/symbols.toml", "version = \"0.1.1a\"\nbuild_id = \"aa\"\n");
+    EXPECT_FALSE(launcher::has_symbols(find())) << "another version";
+}
+
 TEST(SdkCatalog, TheEditorStartsFromItsBinWithTheProject) {
     const launcher::SdkEntry sdk{.root = "C:/sdk", .manifest = {}, .located = true};
     const engine::ProcessDesc desc = launcher::editor_launch(sdk, "C:/games/ttt");

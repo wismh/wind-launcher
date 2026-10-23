@@ -7,7 +7,9 @@
 namespace launcher {
 namespace {
 
-constexpr std::string_view kCacheHeader = "wind-launcher-sdk-cache 1";
+// 2: a release line may end with the symbols package. A cache of version 1 is dropped, so the next refresh asks GitHub
+// without an ETag and finds the symbols of releases it listed before.
+constexpr std::string_view kCacheHeader = "wind-launcher-sdk-cache 2";
 constexpr std::string_view kApiHost = "https://api.github.com/";
 
 std::vector<std::string> split(std::string_view text, char separator) {
@@ -54,8 +56,17 @@ std::string format_release_cache(const ReleaseCache& cache, const Platform& plat
                     release.checksum_url)) {
             continue;
         }
+        // A symbols package with a tab in it is left out; the SDK is still listed.
+        const bool symbols = release.symbols &&
+                             !has_tab_or_newline(release.symbols->name + release.symbols->url +
+                                     release.symbols->checksum_url);
         out << "release\t" << release.version << '\t' << release.date << '\t' << release.size << '\t'
-            << release.archive_name << '\t' << release.archive_url << '\t' << release.checksum_url << '\n';
+            << release.archive_name << '\t' << release.archive_url << '\t' << release.checksum_url;
+        if (symbols) {
+            out << '\t' << release.symbols->name << '\t' << release.symbols->url << '\t'
+                << release.symbols->checksum_url << '\t' << release.symbols->size;
+        }
+        out << '\n';
     }
     return out.str();
 }
@@ -92,7 +103,7 @@ ReleaseCache parse_release_cache(std::string_view text, const Platform& platform
             cache.fetched = fields[1];
         } else if (fields[0] == "platform" && fields.size() == 3) {
             platform_ok = fields[1] == platform.os && fields[2] == platform.arch;
-        } else if (fields[0] == "release" && fields.size() == 7) {
+        } else if (fields[0] == "release" && (fields.size() == 7 || fields.size() == 11)) {
             const std::optional<engine::EngineVersion> parsed = engine::parse_engine_version(fields[1]);
             if (!parsed || !fields[5].starts_with("https://") || !fields[6].starts_with("https://")) {
                 return {};
@@ -109,6 +120,18 @@ ReleaseCache parse_release_cache(std::string_view text, const Platform& platform
             release.archive_name = fields[4];
             release.archive_url = fields[5];
             release.checksum_url = fields[6];
+            if (fields.size() == 11) {
+                if (!fields[8].starts_with("https://") || !fields[9].starts_with("https://")) {
+                    return {};
+                }
+                SdkPackage symbols{.name = fields[7], .url = fields[8], .checksum_url = fields[9]};
+                try {
+                    symbols.size = std::stoull(fields[10]);
+                } catch (const std::exception&) {
+                    return {};
+                }
+                release.symbols = std::move(symbols);
+            }
             cache.releases.push_back(std::move(release));
         } else {
             return {};

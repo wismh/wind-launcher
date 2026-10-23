@@ -28,6 +28,8 @@ public:
     engine::ui::Bindable<std::string> newProjectDisplay{std::string("none")};
     // The Install SDK page, reached from SDKs (which keeps its tab checked).
     engine::ui::Bindable<std::string> availableDisplay{std::string("none")};
+    // The page after Install on an Available row: what to install with the SDK.
+    engine::ui::Bindable<std::string> optionsDisplay{std::string("none")};
 
     engine::ui::BindableList<std::shared_ptr<ProjectRowViewModel>> projects;
     engine::ui::BindableList<std::shared_ptr<SdkRowViewModel>> sdks;
@@ -38,6 +40,20 @@ public:
     // Where SDKs are installed, or why there is no such directory.
     engine::ui::Bindable<std::string> sdkFolderText;
     engine::ui::Bindable<std::string> statusText;
+    // The right end of the status bar: the install that is running and how far it is, on every page. Empty when none.
+    engine::ui::Bindable<std::string> installText;
+    // The widest the status message may be, through `var-limit`: all of the bar, or what installText leaves.
+    engine::ui::Bindable<std::string> statusLimit{std::string("100%")};
+
+    // The modules page. "Install SDK 0.2.9a", the size of the SDK (always installed), and the optional debug symbols:
+    // `symbolsAvailable` when the release has them for this system (else `symbolsMissing` says they are not published),
+    // `symbolsChecked` written by the checkbox, `symbolsDetail` their size.
+    engine::ui::Bindable<std::string> optionsTitle;
+    engine::ui::Bindable<std::string> optionsSdkDetail;
+    engine::ui::Bindable<bool> symbolsAvailable;
+    engine::ui::Bindable<bool> symbolsMissing;
+    engine::ui::Bindable<bool> symbolsChecked;
+    engine::ui::Bindable<std::string> symbolsDetail;
 
     // The New project page. The two text fields are written by typing; the launcher reads them every frame the page
     // is shown.
@@ -55,6 +71,8 @@ public:
     MethodCommand showSdks;
     MethodCommand installSdk;
     MethodCommand closeInstallSdk;
+    MethodCommand closeInstallOptions;
+    MethodCommand confirmInstall;
     MethodCommand addProject;
     MethodCommand newProject;
     MethodCommand locateSdk;

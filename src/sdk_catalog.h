@@ -5,6 +5,7 @@
 
 #include <expected>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -19,6 +20,22 @@ struct SdkEntry {
     // deleted.
     bool located = false;
 };
+
+// The marker file of a symbols package, at the SDK root once the package is unpacked over it.
+inline constexpr char kSymbolsMarkerFile[] = "symbols.toml";
+
+// symbols.toml: which SDK build the debug symbols belong to.
+struct SymbolsMarker {
+    std::string version;
+    std::string build_id;
+};
+
+// Reads `<directory>/symbols.toml` (flat `key = "value"` lines). nullopt when it is missing, unreadable, or lacks
+// `version` or `build_id`.
+[[nodiscard]] std::optional<SymbolsMarker> read_symbols_marker(const std::filesystem::path& directory);
+
+// Whether the debug symbols of this very build are over the SDK: the marker's version and build_id are the SDK's.
+[[nodiscard]] bool has_symbols(const SdkEntry& sdk);
 
 // Where SDKs are installed: `%LOCALAPPDATA%/Programs/Wind/Sdks` on Windows, `$XDG_DATA_HOME/Wind/Sdks` (or
 // `~/.local/share/Wind/Sdks`) elsewhere. Empty when that variable is not set.

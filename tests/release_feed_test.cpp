@@ -306,6 +306,47 @@ TEST(ReleaseCacheFile, RoundTripsAndRefusesWhatItDoesNotKnow) {
     EXPECT_TRUE(launcher::parse_release_cache(http, kLinux).releases.empty()) << "only https links";
 }
 
+TEST(ReleaseCacheFile, RoundTripsTheSymbolsPackage) {
+    launcher::ReleaseCache cache;
+    cache.fetched = "2026-10-23";
+    launcher::SdkRelease with;
+    with.version = "0.2.9a";
+    with.parsed = *engine::parse_engine_version("0.2.9a");
+    with.size = 20886559;
+    with.archive_name = "wind-sdk-0.2.9a-linux-x86_64.tar.gz";
+    with.archive_url = "https://github.com/a/" + with.archive_name;
+    with.checksum_url = with.archive_url + ".sha256";
+    with.symbols = launcher::SdkPackage{.name = "wind-sdk-symbols-0.2.9a-linux-x86_64.tar.gz",
+            .url = "https://github.com/a/wind-sdk-symbols-0.2.9a-linux-x86_64.tar.gz",
+            .checksum_url = "https://github.com/a/wind-sdk-symbols-0.2.9a-linux-x86_64.tar.gz.sha256",
+            .size = 85128922};
+    launcher::SdkRelease without = with;
+    without.version = "0.2.8a";
+    without.parsed = *engine::parse_engine_version("0.2.8a");
+    without.symbols.reset();
+    cache.releases = {with, without};
+
+    const std::string text = launcher::format_release_cache(cache, kLinux);
+    const launcher::ReleaseCache again = launcher::parse_release_cache(text, kLinux);
+    ASSERT_EQ(again.releases.size(), 2u);
+    EXPECT_EQ(again.releases[0], with);
+    EXPECT_EQ(again.releases[1], without);
+    EXPECT_FALSE(again.releases[1].symbols.has_value());
+
+    std::string http = text;
+    http.replace(http.find("https://github.com/a/wind-sdk-symbols"), 8, "http://x");
+    EXPECT_TRUE(launcher::parse_release_cache(http, kLinux).releases.empty()) << "only https links";
+}
+
+TEST(ReleaseCacheFile, ACacheOfTheFirstFormatIsDropped) {
+    // It has no symbols; keeping it would let a 304 answer hide them for ever.
+    const std::string old_cache =
+            "wind-launcher-sdk-cache 1\netag\tW/\"x\"\nfetched\t2026-10-15\nplatform\tlinux\tx86_64\n"
+            "release\t0.1.2a\t2026-10-12\t123\twind-sdk-0.1.2a-linux-x86_64.tar.gz\thttps://a/b\thttps://a/b.sha256\n";
+    EXPECT_TRUE(launcher::parse_release_cache(old_cache, kLinux).releases.empty());
+    EXPECT_TRUE(launcher::parse_release_cache(old_cache, kLinux).etag.empty());
+}
+
 TEST(ReleaseCacheFile, ATodayInUtc) {
     const std::string today = launcher::today_utc();
     ASSERT_EQ(today.size(), 10u);
