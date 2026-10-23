@@ -208,13 +208,22 @@ ScrollView.box {
   width: 100%;
   height: 32;
   padding: 0 16 0 16;
+  gap: 16;
+  justify-content: space-between;
   align-items: center;
   background: #2b2d30;
 }
 
+/* --limit is the whole bar, or what the install progress at the right leaves of it: 360 px and a gap (LauncherApp). */
 .status {
+  max-width: var(--limit, 100%);
   font-size: 13;
   color: #8c9096;
+}
+
+.install-status {
+  width: 360;
+  text-align: end;
 }
 
 ItemsControl.rows {
@@ -469,6 +478,63 @@ Button.sdk-option {
 Button.sdk-option:checked {
   color: #ffffff;
   background: #3c3f41;
+}
+
+/* The modules page: a row per module in the form's 560 px column. */
+.module {
+  width: 100%;
+  height: 56;
+  padding: 0 12 0 12;
+  gap: 10;
+  border-radius: 6;
+  align-items: center;
+  background: #2b2d30;
+  border-width: 1;
+  border-color: #393b40;
+}
+
+/* A Checkbox does not pack its children: one Stack of the whole box holds them. */
+.module-inner {
+  width: 100%;
+  height: 100%;
+  gap: 12;
+  align-items: center;
+}
+
+.module-choice:hover {
+  background: #34363a;
+}
+
+/* Row 560, padding 24, the note 70, the gap 10. */
+.module-text {
+  width: calc(100% - 80px);
+  gap: 2;
+}
+
+.module-inner .module-text {
+  width: calc(100% - 30px);
+}
+
+.module-note {
+  width: 70;
+  font-size: 12;
+  color: #8c9096;
+  text-align: end;
+}
+
+/* The tick box. Its :checked state follows the same property as the checkbox around it. */
+.tick {
+  width: 18;
+  height: 18;
+  border-radius: 4;
+  border-width: 1;
+  border-color: #5a5e62;
+  background: #1e1f22;
+}
+
+.tick:checked {
+  border-color: #3a9142;
+  background: #2f7d36;
 }
 
 /* --tone is red when the project cannot be created (LauncherApp). */

@@ -7,6 +7,8 @@
 
 #include <algorithm>
 #include <compare>
+#include <fstream>
+#include <iterator>
 #include <optional>
 #include <system_error>
 
@@ -23,6 +25,63 @@ bool known(const std::vector<SdkEntry>& sdks, const std::filesystem::path& root)
     return std::ranges::any_of(sdks, [&](const SdkEntry& entry) { return same_directory(entry.root, root); });
 }
 
+// The value of `key = "value"` among the top-level lines of a flat TOML text.
+std::optional<std::string> string_value(std::string_view text, std::string_view key) {
+    std::size_t start = 0;
+    while (start < text.size()) {
+        std::size_t end = text.find('\n', start);
+        if (end == std::string_view::npos) {
+            end = text.size();
+        }
+        std::string_view line = text.substr(start, end - start);
+        start = end + 1;
+        const std::size_t first = line.find_first_not_of(" \t\r");
+        if (first == std::string_view::npos || line[first] == '#') {
+            continue;
+        }
+        line.remove_prefix(first);
+        if (line.front() == '[') {
+            return std::nullopt;
+        }
+        if (!line.starts_with(key)) {
+            continue;
+        }
+        line.remove_prefix(key.size());
+        const std::size_t equals = line.find_first_not_of(" \t");
+        if (equals == std::string_view::npos || line[equals] != '=') {
+            continue;
+        }
+        line.remove_prefix(equals + 1);
+        const std::size_t open = line.find('"');
+        const std::size_t close = open == std::string_view::npos ? open : line.find('"', open + 1);
+        if (close == std::string_view::npos) {
+            return std::nullopt;
+        }
+        return std::string(line.substr(open + 1, close - open - 1));
+    }
+    return std::nullopt;
+}
+
+}
+
+std::optional<SymbolsMarker> read_symbols_marker(const std::filesystem::path& directory) {
+    std::ifstream in(directory / kSymbolsMarkerFile, std::ios::binary);
+    if (!in) {
+        return std::nullopt;
+    }
+    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    std::optional<std::string> version = string_value(text, "version");
+    std::optional<std::string> build_id = string_value(text, "build_id");
+    if (!version || !build_id) {
+        return std::nullopt;
+    }
+    return SymbolsMarker{.version = std::move(*version), .build_id = std::move(*build_id)};
+}
+
+bool has_symbols(const SdkEntry& sdk) {
+    const std::optional<SymbolsMarker> marker = read_symbols_marker(sdk.root);
+    return marker && marker->version == sdk.manifest.version && !sdk.manifest.build_id.empty() &&
+           marker->build_id == sdk.manifest.build_id;
 }
 
 int compare_versions(std::string_view a, std::string_view b) {

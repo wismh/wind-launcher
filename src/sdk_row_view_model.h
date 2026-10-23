@@ -24,6 +24,8 @@ public:
 
     void toggle_menu();
     void show_sdk();
+    // Add debug symbols: closes the menu and asks the launcher to download them.
+    void add_symbols();
     // Forget for a located SDK; for an installed one, opens the confirmation.
     void remove_sdk();
     void delete_sdk();
@@ -36,10 +38,15 @@ public:
     // "Forget" or "Delete…".
     engine::ui::Bindable<std::string> removeLabel;
     engine::ui::Bindable<std::string> confirmText;
+    // The menu item "Add debug symbols (85.1 MB)": shown for an installed SDK without them whose release has a package,
+    // while nothing else installs.
+    engine::ui::Bindable<bool> canAddSymbols;
+    engine::ui::Bindable<std::string> symbolsLabel;
     engine::ui::Bindable<bool> menuOpen;
     engine::ui::Bindable<bool> confirmOpen;
     MethodCommand toggleMenu;
     MethodCommand show;
+    MethodCommand addSymbols;
     MethodCommand remove;
     MethodCommand confirmDelete;
     MethodCommand cancelDelete;

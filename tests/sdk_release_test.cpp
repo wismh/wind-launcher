@@ -60,6 +60,76 @@ TEST(SdkAssets, MalformedVersionsAreIgnored) {
     }
 }
 
+TEST(SdkAssets, TheSymbolsPackageIsNamedAfterTheSdk) {
+    EXPECT_EQ(launcher::symbols_archive_name("0.2.9a", kWindows), "wind-sdk-symbols-0.2.9a-windows-x86_64.zip");
+    EXPECT_EQ(launcher::symbols_archive_name("0.2.9a", kLinux), "wind-sdk-symbols-0.2.9a-linux-x86_64.tar.gz");
+    EXPECT_EQ(launcher::symbols_archive_name("0.2.9a", kMac), "wind-sdk-symbols-0.2.9a-macos-arm64.tar.gz");
+    EXPECT_EQ(launcher::symbols_top_directory("0.2.9a", kMac), "wind-sdk-symbols-0.2.9a-macos-arm64");
+}
+
+TEST(SdkAssets, OtherPackagesOfTheReleaseAreNotSdks) {
+    EXPECT_EQ(launcher::sdk_asset_version("wind-sdk-symbols-0.2.9a-linux-x86_64.tar.gz", kLinux), std::nullopt);
+    EXPECT_EQ(launcher::sdk_asset_version("wind-sdk-symbols-0.2.9a-windows-x86_64.zip", kWindows), std::nullopt);
+    EXPECT_EQ(launcher::sdk_asset_version("wind-sdk-source-0.2.9a.tar.gz", kLinux), std::nullopt);
+}
+
+TEST(ReleasePage, TheSymbolsPackageComesWithTheSdk) {
+    const std::string json = R"([{"published_at": "2026-10-23T10:04:51Z", "assets": [
+        {"name": "wind-sdk-symbols-0.2.9a-linux-x86_64.tar.gz", "size": 85128922, "browser_download_url": "https://example.com/s.tar.gz"},
+        {"name": "wind-sdk-symbols-0.2.9a-linux-x86_64.tar.gz.sha256", "size": 110, "browser_download_url": "https://example.com/s.tar.gz.sha256"},
+        {"name": "wind-sdk-0.2.9a-linux-x86_64.tar.gz", "size": 20886559, "browser_download_url": "https://example.com/a.tar.gz"},
+        {"name": "wind-sdk-0.2.9a-linux-x86_64.tar.gz.sha256", "size": 102, "browser_download_url": "https://example.com/a.tar.gz.sha256"},
+        {"name": "wind-sdk-symbols-0.2.9a-windows-x86_64.zip", "size": 1, "browser_download_url": "https://example.com/w.zip"},
+        {"name": "wind-sdk-source-0.2.9a.tar.gz", "size": 61412887, "browser_download_url": "https://example.com/src.tar.gz"}]}])";
+    const auto page = launcher::parse_release_page(json, kLinux);
+    ASSERT_TRUE(page.has_value()) << page.error();
+    ASSERT_EQ(page->releases.size(), 1u) << "the symbols and the source are not SDKs of their own";
+    const launcher::SdkRelease& release = page->releases[0];
+    EXPECT_EQ(release.version, "0.2.9a");
+    EXPECT_EQ(release.archive_name, "wind-sdk-0.2.9a-linux-x86_64.tar.gz");
+    EXPECT_EQ(release.size, 20886559u);
+    ASSERT_TRUE(release.symbols.has_value());
+    EXPECT_EQ(release.symbols->name, "wind-sdk-symbols-0.2.9a-linux-x86_64.tar.gz");
+    EXPECT_EQ(release.symbols->url, "https://example.com/s.tar.gz");
+    EXPECT_EQ(release.symbols->checksum_url, "https://example.com/s.tar.gz.sha256");
+    EXPECT_EQ(release.symbols->size, 85128922u);
+
+    const auto windows = launcher::parse_release_page(json, kWindows);
+    ASSERT_TRUE(windows.has_value());
+    EXPECT_TRUE(windows->releases.empty()) << "symbols alone are no SDK";
+}
+
+TEST(ReleasePage, ASdkWithoutUsableSymbolsIsListedWithoutThem) {
+    const auto sdk = [](const std::string& symbols_assets) {
+        return R"([{"published_at": "2026-10-12T08:30:00Z", "assets": [
+        {"name": "wind-sdk-0.1.2a-linux-x86_64.tar.gz", "size": 5, "browser_download_url": "https://example.com/a"},
+        {"name": "wind-sdk-0.1.2a-linux-x86_64.tar.gz.sha256", "size": 5, "browser_download_url": "https://example.com/a.sha256"})" +
+               symbols_assets + "]}]";
+    };
+    // Before the split: no symbols package at all.
+    auto page = launcher::parse_release_page(sdk(""), kLinux);
+    ASSERT_TRUE(page.has_value());
+    ASSERT_EQ(page->releases.size(), 1u);
+    EXPECT_FALSE(page->releases[0].symbols.has_value());
+
+    // No checksum for the symbols.
+    page = launcher::parse_release_page(sdk(R"(,
+        {"name": "wind-sdk-symbols-0.1.2a-linux-x86_64.tar.gz", "size": 5, "browser_download_url": "https://example.com/s"})"),
+            kLinux);
+    ASSERT_TRUE(page.has_value());
+    ASSERT_EQ(page->releases.size(), 1u);
+    EXPECT_FALSE(page->releases[0].symbols.has_value());
+
+    // A link that is not https.
+    page = launcher::parse_release_page(sdk(R"(,
+        {"name": "wind-sdk-symbols-0.1.2a-linux-x86_64.tar.gz", "size": 5, "browser_download_url": "http://example.com/s"},
+        {"name": "wind-sdk-symbols-0.1.2a-linux-x86_64.tar.gz.sha256", "size": 5, "browser_download_url": "https://example.com/s.sha256"})"),
+            kLinux);
+    ASSERT_TRUE(page.has_value());
+    ASSERT_EQ(page->releases.size(), 1u);
+    EXPECT_FALSE(page->releases[0].symbols.has_value());
+}
+
 TEST(ReleasePage, TheLinuxSdksOfTheFirstPage) {
     const auto page = launcher::parse_release_page(fixture("releases_page1.json"), kLinux);
     ASSERT_TRUE(page.has_value()) << page.error();

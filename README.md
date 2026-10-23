@@ -34,6 +34,12 @@ The Available list is the list of releases of [wismh/wind-engine](https://github
 
 An install downloads the checksum file and the archive into a temporary directory inside the install directory, checks the SHA-256, unpacks it, checks that it holds exactly `wind-sdk-<version>-<os>-<arch>/` with an `sdk.toml` of that version and `bin/wind_editor`, and renames it to `sdk-<version>`. Any failure (no network, a damaged download, a bad archive) removes the temporary directory and says why on the row; **Cancel** does the same. One install runs at a time, and the window stays responsive. An install that was cut short (the launcher closed, a power loss) is cleaned up the next time the launcher starts. The archive is never run, and an entry that would leave its folder (`..`, an absolute path, a link out) is refused.
 
+### Modules
+
+**Install** on a row opens a page of what comes with the SDK. The editor SDK is always installed. **Debug symbols** (`wind-sdk-symbols-<version>-<os>-<arch>` with its `.sha256`, 100 MB or more, only for debugging the engine itself) are optional and off by default; a release that has no such package does not offer them. Ticked, the package goes through the same steps after the SDK (checksum, download, SHA-256, unpacking) and is copied over the unpacked SDK before it is renamed to `sdk-<version>`, so the SDK appears whole with its symbols. The package has to be of the SDK's build: its `symbols.toml` must name the same `version` and `build_id` as the SDK's `sdk.toml`, or nothing of it is copied. If only the symbols fail (offline half way, a damaged download, another build), the SDK is installed anyway and the message says what is missing.
+
+An installed SDK without them has **Add debug symbols** in its ··· menu on the SDKs page (the same steps over the installed SDK; the copy is the only part that touches it, and `symbols.toml`, which says the symbols are there, is written last). The SDK's detail line says "debug symbols" once they are in. While anything installs, its progress is at the right end of the status bar on every page.
+
 It needs `curl` and `tar` on the `PATH`. They ship with Windows 10 (1803 and later), macOS, and every common Linux; the launcher says so when one is missing. The launcher has no HTTP client of its own: the engine's runs on Windows, Android, and the web only.
 
 GitHub allows 60 unauthenticated API requests an hour. Over that the launcher shows the saved list and a note. Set `GITHUB_TOKEN` or `GH_TOKEN` (any token, no scopes needed) in the environment the launcher starts in to raise the limit; it is sent only to `api.github.com`.
@@ -64,7 +70,7 @@ On Windows use `-G "Visual Studio 18 2026"` instead of Ninja. On Linux the SDK n
 
 ## Tests
 
-`wind_launcher_tests` needs no network and no display: the release parsing against recorded GitHub answers (`tests/fixtures/`), the version order, the ETag cache, SHA-256 against the standard vectors, the installer against a fake downloader and extractor (every failure leaves the SDK list as it was), and real archives made with the system `tar` and unpacked by the real extraction path. `tools/e2e_install.py` is the check with a real network: it drives a Development build of the launcher with `wind-cli`, installs a real SDK from GitHub through the window, checks it on disk, and deletes it again (`ci.yml` runs it on Linux; the screenshots of one run are in `docs/e2e/`).
+`wind_launcher_tests` needs no network and no display: the release parsing against recorded GitHub answers (`tests/fixtures/`), the version order, the ETag cache, SHA-256 against the standard vectors, the installer against a fake downloader and extractor (every failure leaves the SDK list as it was, and the debug symbols are added only to the SDK of their own build), and real archives made with the system `tar` and unpacked by the real extraction path. `tools/e2e_install.py` is the check with a real network: it drives a Development build of the launcher with `wind-cli`, installs a real SDK from GitHub through the window, checks it on disk, and deletes it again (`ci.yml` runs it on Linux; the screenshots of one run are in `docs/e2e/`).
 
 ```sh
 cmake -S . -B build-dev -G "Ninja Multi-Config" -DWIND_EXPORT=ON -DCMAKE_PREFIX_PATH=/path/to/wind-sdk \

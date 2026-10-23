@@ -49,6 +49,9 @@ public:
     void show_projects();
     void show_sdks();
     void show_install_sdk();
+    // The modules page: back to the list, or install the SDK with what is ticked.
+    void close_install_options();
+    void confirm_install();
     void add_project();
     void new_project();
     void locate_sdk();
@@ -71,6 +74,7 @@ private:
         Projects,
         Sdks,
         InstallSdk,
+        InstallOptions,
         NewProject,
     };
 
@@ -90,12 +94,17 @@ private:
     void delete_sdk(std::size_t index);
     // Writes `version` as the engine of project `index` and reads the projects again.
     void change_project_sdk(std::size_t index, const std::string& version);
-    // The Available list.
-    void start_install(const SdkRelease& release);
+    // The Available list. Opens the modules page for the row `index`.
+    void show_install_options(std::size_t index);
+    void start_install(const SdkRelease& release, InstallOptions options = {});
+    // Downloads the debug symbols of the installed SDK `index` of sdks_.
+    void add_symbols(std::size_t index);
     void finish_install(const InstallOutcome& outcome);
     // Rebuilds the Available rows from the feed, the installed SDKs, and the install in progress.
     void rebuild_available();
     void rebuild_project_rows();
+    // Rebuilds the SDKs rows from sdks_, the releases (for the symbols), and the install in progress.
+    void rebuild_sdk_rows();
     // Writes the progress of the running install on its row and the note above the list.
     void show_install_progress();
     void update_available_note();
@@ -129,6 +138,8 @@ private:
     unsigned feed_revision_ = 0;
     std::vector<AvailableSdk> available_;
     std::vector<std::shared_ptr<AvailableSdkRowViewModel>> available_rows_;
+    // The version the modules page is for.
+    std::string options_version_;
     // Why the last install of `version` failed, shown on its row until the next try or the next list.
     std::string failed_version_;
     std::string failure_;

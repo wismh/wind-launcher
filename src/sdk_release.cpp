@@ -9,6 +9,7 @@ namespace launcher {
 namespace {
 
 constexpr std::string_view kPrefix = "wind-sdk-";
+constexpr std::string_view kSymbolsPrefix = "wind-sdk-symbols-";
 
 bool ends_with(std::string_view text, std::string_view suffix) {
     return text.size() >= suffix.size() && text.substr(text.size() - suffix.size()) == suffix;
@@ -17,6 +18,39 @@ bool ends_with(std::string_view text, std::string_view suffix) {
 const std::string* string_member(const JsonValue& object, std::string_view key) {
     const JsonValue* value = object.find(key);
     return value != nullptr && value->is(JsonValue::Kind::String) ? &value->string : nullptr;
+}
+
+const JsonValue* find_asset(const JsonValue& assets, std::string_view name) {
+    for (const JsonValue& asset : assets.array) {
+        const std::string* asset_name = asset.is(JsonValue::Kind::Object) ? string_member(asset, "name") : nullptr;
+        if (asset_name != nullptr && *asset_name == name) {
+            return &asset;
+        }
+    }
+    return nullptr;
+}
+
+const std::string* https_url(const JsonValue* asset) {
+    const std::string* url = asset != nullptr ? string_member(*asset, "browser_download_url") : nullptr;
+    return url != nullptr && url->starts_with("https://") ? url : nullptr;
+}
+
+std::uint64_t size_member(const JsonValue& asset) {
+    const JsonValue* size = asset.find("size");
+    return size != nullptr && size->is(JsonValue::Kind::Number) && size->number >= 0
+                   ? static_cast<std::uint64_t>(size->number)
+                   : 0;
+}
+
+// The archive `name` of the release with its `.sha256`, or nullopt when either is missing or not an https link.
+std::optional<SdkPackage> find_package(const JsonValue& assets, const std::string& name) {
+    const JsonValue* archive = find_asset(assets, name);
+    const std::string* url = https_url(archive);
+    const std::string* checksum_url = https_url(find_asset(assets, name + ".sha256"));
+    if (url == nullptr || checksum_url == nullptr) {
+        return std::nullopt;
+    }
+    return SdkPackage{.name = name, .url = *url, .checksum_url = *checksum_url, .size = size_member(*archive)};
 }
 
 bool is_day(std::string_view text) {
@@ -56,6 +90,14 @@ std::string sdk_top_directory(std::string_view version, const Platform& platform
 
 std::string sdk_archive_name(std::string_view version, const Platform& platform) {
     return sdk_top_directory(version, platform) + (platform.os == "windows" ? ".zip" : ".tar.gz");
+}
+
+std::string symbols_top_directory(std::string_view version, const Platform& platform) {
+    return std::string(kSymbolsPrefix) + std::string(version) + "-" + platform.os + "-" + platform.arch;
+}
+
+std::string symbols_archive_name(std::string_view version, const Platform& platform) {
+    return symbols_top_directory(version, platform) + (platform.os == "windows" ? ".zip" : ".tar.gz");
 }
 
 std::string sdk_checksum_name(std::string_view version, const Platform& platform) {
@@ -111,22 +153,9 @@ std::expected<ReleasePage, std::string> parse_release_page(std::string_view json
             if (!version) {
                 continue;
             }
-            const std::string* url = string_member(asset, "browser_download_url");
-            if (url == nullptr || !url->starts_with("https://")) {
-                continue;
-            }
             // The checksum is an asset of the same release, named after the archive.
-            const std::string checksum_name = *name + ".sha256";
-            const std::string* checksum_url = nullptr;
-            for (const JsonValue& other : assets->array) {
-                const std::string* other_name = other.is(JsonValue::Kind::Object) ? string_member(other, "name")
-                                                                                   : nullptr;
-                if (other_name != nullptr && *other_name == checksum_name) {
-                    checksum_url = string_member(other, "browser_download_url");
-                    break;
-                }
-            }
-            if (checksum_url == nullptr || !checksum_url->starts_with("https://")) {
+            const std::optional<SdkPackage> package = find_package(*assets, *name);
+            if (!package) {
                 continue;
             }
             SdkRelease sdk;
@@ -139,13 +168,11 @@ std::expected<ReleasePage, std::string> parse_release_page(std::string_view json
             if (published != nullptr && is_day(*published)) {
                 sdk.date = published->substr(0, 10);
             }
-            sdk.archive_name = *name;
-            sdk.archive_url = *url;
-            sdk.checksum_url = *checksum_url;
-            const JsonValue* size = asset.find("size");
-            if (size != nullptr && size->is(JsonValue::Kind::Number) && size->number >= 0) {
-                sdk.size = static_cast<std::uint64_t>(size->number);
-            }
+            sdk.archive_name = package->name;
+            sdk.archive_url = package->url;
+            sdk.checksum_url = package->checksum_url;
+            sdk.size = package->size;
+            sdk.symbols = find_package(*assets, symbols_archive_name(*version, platform));
             page.releases.push_back(std::move(sdk));
             break;
         }
