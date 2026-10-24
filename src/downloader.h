@@ -1,11 +1,13 @@
 #pragma once
 
-#include <engine/process/process_call.h>
-#include <engine/process/process_launcher.h>
+#include <engine/net/http_call.h>
+#include <engine/net/http_client.h>
 
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace launcher {
@@ -19,7 +21,7 @@ struct DownloadRequest {
     std::filesystem::path header_output;
     // `Name: value` lines sent with the request.
     std::vector<std::string> headers;
-    // A bearer token for the request, or empty. It is never put on a command line.
+    // A bearer token for the request, or empty.
     std::string bearer_token;
     // A download: follow redirects, and an HTTP status of 400 or more is an error. Off for an API call, whose 304,
     // 403, and 429 answers the caller reads itself.
@@ -51,13 +53,13 @@ public:
     virtual void cancel() = 0;
 };
 
-// The `curl` that ships with Windows 10 1803+, macOS, and every common Linux, started through IProcessLauncher: the
-// engine has no HTTP client on Linux and macOS. A transfer that breaks (a reset connection, a timeout) is started again,
-// up to three times in all: curl's own `--retry` does not retry a reset, and `--retry-all-errors` is newer than the curl
-// of Windows 10 1803. An HTTP error (curl's exit code 22, a 404) and a program that cannot start are not retried.
-class CurlDownloader final : public IDownloader {
+// The engine's HttpClient. The body of a 2xx answer is streamed into `output` on a worker thread, so an archive never
+// sits in memory. A transfer that breaks (a reset connection, a timeout, a host that does not resolve) is started again,
+// up to three times in all. A redirect to http, an HTTP error (a 404), and a platform without an HTTP client are not
+// retried.
+class HttpDownloader final : public IDownloader {
 public:
-    explicit CurlDownloader(engine::IProcessLauncher& processes);
+    explicit HttpDownloader(engine::IHttpClient& http);
 
     [[nodiscard]] bool busy() const override;
     void start(DownloadRequest request) override;
@@ -65,22 +67,26 @@ public:
     void cancel() override;
 
 private:
-    void run_curl();
+    struct Sink;
 
-    engine::IProcessLauncher* processes_;
-    engine::ProcessCall call_;
+    void send();
+    [[nodiscard]] DownloadResult finish(const engine::HttpResult& result);
+
+    engine::IHttpClient* http_;
+    engine::HttpCall call_;
     DownloadRequest request_;
-    std::filesystem::path header_input_;
-    std::vector<std::string> output_;
+    std::shared_ptr<Sink> sink_;
     int attempts_ = 0;
     // From start() until poll() has given the answer or cancel(): a finished call is not pending, but is not answered yet.
     bool active_ = false;
 };
 
-// The arguments of the `curl` call for `request`; `header_input` is the file with the request headers, passed as
-// `-H @file`, or empty. Public for the tests.
-[[nodiscard]] std::vector<std::string> curl_arguments(
-        const DownloadRequest& request, const std::filesystem::path& header_input);
+// The `Name: value` lines of a request as headers; a line without a colon is dropped.
+[[nodiscard]] std::vector<engine::HttpHeader> parse_header_lines(const std::vector<std::string>& lines);
+
+// A header dump of a response: `HTTP/1.1 <status>` and a `Name: value` line per header, ended by a blank line, the form
+// parse_http_status and find_header read.
+[[nodiscard]] std::string format_header_dump(const engine::HttpResponse& response);
 
 // The status of the last `HTTP/<v> <code> ...` line of a header dump, 0 when there is none.
 [[nodiscard]] int parse_http_status(std::string_view header_dump);

@@ -32,9 +32,9 @@ namespace launcher {
 //
 // Remembers its lists in `user_data_directory("Wind", "Launcher")/launcher.txt` and finds installed SDKs under
 // sdk_install_directory(). The SDKs page also lists the SDKs of the engine's GitHub releases for this platform
-// (ReleaseFeed) and installs one on request (SdkInstaller): the downloads and the unpacking run as `curl` and `tar`
-// processes polled in the frame system, so the window stays responsive. Holds `this` in its rows and its system, so it
-// never moves.
+// (ReleaseFeed) and installs one on request (SdkInstaller): the downloads go through the engine's HTTP client and
+// the unpacking runs as a `tar` process, both polled in the frame system, so the window stays responsive. Holds `this`
+// in its rows and its system, so it never moves.
 class LauncherApp final : public engine::GameBase {
 public:
     explicit LauncherApp(const engine::EngineServices& services);
@@ -129,8 +129,8 @@ private:
     std::shared_ptr<LauncherViewModel> view_model_;
 
     // Two downloaders: the list of releases and an install run side by side.
-    CurlDownloader feed_downloader_;
-    CurlDownloader install_downloader_;
+    HttpDownloader feed_downloader_;
+    HttpDownloader install_downloader_;
     TarExtractor extractor_;
     SdkInstaller installer_;
     // Made in on_start, when the user data directory is known.

@@ -65,8 +65,8 @@ LauncherApp::LauncherApp(const engine::EngineServices& services)
     , windows_(&services.windows)
     , processes_(&services.processes)
     , view_model_(std::make_shared<LauncherViewModel>())
-    , feed_downloader_(services.processes)
-    , install_downloader_(services.processes)
+    , feed_downloader_(services.http)
+    , install_downloader_(services.http)
     , extractor_(services.processes)
     , installer_(install_downloader_, extractor_) {
     view_model_->showProjects.bind_to<LauncherApp, &LauncherApp::show_projects>(*this);

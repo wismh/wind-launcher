@@ -40,7 +40,7 @@ An install downloads the checksum file and the archive into a temporary director
 
 An installed SDK without them has **Add debug symbols** in its ··· menu on the SDKs page (the same steps over the installed SDK; the copy is the only part that touches it, and `symbols.toml`, which says the symbols are there, is written last). The SDK's detail line says "debug symbols" once they are in. While anything installs, its progress is at the right end of the status bar on every page.
 
-It needs `curl` and `tar` on the `PATH`. They ship with Windows 10 (1803 and later), macOS, and every common Linux; the launcher says so when one is missing. The launcher has no HTTP client of its own: the engine's runs on Windows, Android, and the web only.
+Downloads go through the engine's HTTP client (WinHTTP on Windows, the system libcurl on Linux and macOS), and the archive is streamed to disk. Unpacking needs `tar` on the `PATH`; it ships with Windows 10 (1803 and later), macOS, and every common Linux, and the launcher says so when it is missing.
 
 GitHub allows 60 unauthenticated API requests an hour. Over that the launcher shows the saved list and a note. Set `GITHUB_TOKEN` or `GH_TOKEN` (any token, no scopes needed) in the environment the launcher starts in to raise the limit; it is sent only to `api.github.com`.
 

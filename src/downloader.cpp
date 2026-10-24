@@ -2,9 +2,13 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstddef>
+#include <expected>
 #include <fstream>
 #include <iterator>
-#include <sstream>
+#include <span>
+#include <system_error>
+#include <utility>
 
 namespace launcher {
 namespace {
@@ -82,119 +86,195 @@ std::optional<std::string> find_header(std::string_view header_dump, std::string
     return std::nullopt;
 }
 
-std::vector<std::string> curl_arguments(const DownloadRequest& request, const std::filesystem::path& header_input) {
-    std::vector<std::string> args{"--silent", "--show-error", "--proto", "=https", "--retry", "3", "--connect-timeout", "20"};
-    if (request.download) {
-        // Follow redirects (a release asset is served from another host), but only to https, fail on 4xx and 5xx, and
-        // give up on a transfer that stalls for a minute.
-        args.insert(args.end(), {"--location", "--proto-redir", "=https", "--fail", "--speed-limit", "1000",
-                                        "--speed-time", "60"});
-    } else {
-        args.insert(args.end(), {"--max-time", "60"});
+std::vector<engine::HttpHeader> parse_header_lines(const std::vector<std::string>& lines) {
+    std::vector<engine::HttpHeader> headers;
+    for (const std::string& line : lines) {
+        const std::size_t colon = line.find(':');
+        if (colon == std::string::npos) {
+            continue;
+        }
+        std::string_view value = std::string_view(line).substr(colon + 1);
+        while (!value.empty() && (value.front() == ' ' || value.front() == '\t')) {
+            value.remove_prefix(1);
+        }
+        headers.push_back({.name = line.substr(0, colon), .value = std::string(value)});
     }
-    if (!header_input.empty()) {
-        args.push_back("-H");
-        args.push_back("@" + header_input.generic_string());
-    }
-    if (!request.header_output.empty()) {
-        args.push_back("--dump-header");
-        args.push_back(request.header_output.generic_string());
-    }
-    args.push_back("--output");
-    args.push_back(request.output.generic_string());
-    args.push_back(request.url);
-    return args;
+    return headers;
 }
 
-CurlDownloader::CurlDownloader(engine::IProcessLauncher& processes)
-    : processes_(&processes) {}
+std::string format_header_dump(const engine::HttpResponse& response) {
+    std::string dump = "HTTP/1.1 " + std::to_string(response.status) + "\r\n";
+    for (const engine::HttpHeader& header : response.headers) {
+        dump += header.name + ": " + header.value + "\r\n";
+    }
+    dump += "\r\n";
+    return dump;
+}
 
-bool CurlDownloader::busy() const {
+// The body of a 2xx answer, written as the bytes arrive. The sink runs on the transfer's worker thread, and the engine
+// does not call it again once HttpCall::cancel or the call's destructor has returned, so the file is closed only after.
+struct HttpDownloader::Sink {
+    std::ofstream file;
+    // Set on the worker thread when a write failed; read after the answer, which orders the two.
+    bool failed = false;
+};
+
+HttpDownloader::HttpDownloader(engine::IHttpClient& http)
+    : http_(&http) {}
+
+bool HttpDownloader::busy() const {
     return active_;
 }
 
-void CurlDownloader::start(DownloadRequest request) {
+void HttpDownloader::start(DownloadRequest request) {
     request_ = std::move(request);
-    output_.clear();
-    header_input_.clear();
     std::error_code error;
-    std::filesystem::remove(request_.output, error);
     if (!request_.header_output.empty()) {
         std::filesystem::remove(request_.header_output, error);
     }
-    if (!request_.headers.empty() || !request_.bearer_token.empty()) {
-        // The headers go in a file, so a token is not on the command line (visible to every user of the machine).
-        header_input_ = request_.output;
-        header_input_ += ".request-headers";
-        std::ofstream out(header_input_, std::ios::binary | std::ios::trunc);
-        for (const std::string& header : request_.headers) {
-            out << header << '\n';
-        }
-        if (!request_.bearer_token.empty()) {
-            out << "Authorization: Bearer " << request_.bearer_token << '\n';
-        }
-    }
     attempts_ = 0;
     active_ = true;
-    run_curl();
+    send();
 }
 
-void CurlDownloader::run_curl() {
+void HttpDownloader::send() {
     ++attempts_;
-    output_.clear();
-    std::error_code error;
-    std::filesystem::remove(request_.output, error);
-    call_ = processes_->run(engine::ProcessDesc{.program = "curl", .arguments = curl_arguments(request_, header_input_)});
+    sink_ = std::make_shared<Sink>();
+    // Opening truncates: an old file, or the part of a transfer that broke, is gone.
+    sink_->file.open(request_.output, std::ios::binary | std::ios::trunc);
+
+    engine::HttpRequest http;
+    http.url = request_.url;
+    http.headers = parse_header_lines(request_.headers);
+    if (!request_.bearer_token.empty()) {
+        http.headers.push_back({.name = "Authorization", .value = "Bearer " + request_.bearer_token});
+    }
+    if (request_.download) {
+        // A release asset is served from another host, so follow redirects, but never to http. Give up on a transfer
+        // that stalls for a minute.
+        http.timeout_seconds = 30.f;
+        http.max_redirects = 10;
+        http.allow_insecure_redirect = false;
+        http.min_bytes_per_second = 1000;
+        http.stall_seconds = 60.f;
+    } else {
+        // An API call: its 304, 403, and 429 answers are the caller's to read.
+        http.timeout_seconds = 60.f;
+        http.max_redirects = 0;
+    }
+    http.sink = [sink = sink_](std::span<const std::byte> chunk) {
+        sink->file.write(reinterpret_cast<const char*>(chunk.data()), static_cast<std::streamsize>(chunk.size()));
+        sink->failed = sink->failed || !sink->file;
+        return !sink->failed;
+    };
+    http.sink_thread = engine::HttpSinkThread::Worker;
+    if (!sink_->file.is_open() || !request_.url.starts_with("https://")) {
+        // No transfer: the answer is the failure, from the first poll.
+        sink_->failed = !sink_->file.is_open();
+        call_ = engine::HttpCall::resolved(std::unexpected(engine::HttpError::InvalidUrl));
+        return;
+    }
+    call_ = http_->send(std::move(http));
 }
 
-std::optional<DownloadResult> CurlDownloader::poll() {
-    for (std::string& line : call_.take_output()) {
-        output_.push_back(std::move(line));
+namespace {
+
+bool retryable(engine::HttpError error) {
+    switch (error) {
+    case engine::HttpError::Network:
+    case engine::HttpError::Timeout:
+    case engine::HttpError::Dns:
+    case engine::HttpError::ConnectionReset:
+        return true;
+    case engine::HttpError::InvalidUrl:
+    case engine::HttpError::Unsupported:
+    case engine::HttpError::TooLarge:
+    case engine::HttpError::Tls:
+    case engine::HttpError::RedirectRefused:
+    case engine::HttpError::SinkAborted:
+        return false;
     }
-    const std::optional<engine::ProcessResult> result = call_.take();
+    return false;
+}
+
+std::string describe(engine::HttpError error) {
+    switch (error) {
+    case engine::HttpError::InvalidUrl:
+        return "the address is not an https link";
+    case engine::HttpError::Unsupported:
+        return "this platform has no HTTP client (on Linux and macOS Wind needs libcurl installed)";
+    case engine::HttpError::Network:
+        return "the network request failed";
+    case engine::HttpError::Timeout:
+        return "the connection timed out";
+    case engine::HttpError::TooLarge:
+        return "the answer is too large";
+    case engine::HttpError::Dns:
+        return "could not resolve the host";
+    case engine::HttpError::Tls:
+        return "the TLS handshake or certificate was refused";
+    case engine::HttpError::ConnectionReset:
+        return "the connection was dropped";
+    case engine::HttpError::RedirectRefused:
+        return "a redirect was refused (too many, or to http)";
+    case engine::HttpError::SinkAborted:
+        return "the file could not be written";
+    }
+    return "the network request failed";
+}
+
+}
+
+std::optional<DownloadResult> HttpDownloader::poll() {
+    const std::optional<engine::HttpResult> result = call_.take();
     if (!result) {
         return std::nullopt;
     }
     constexpr int kMaxAttempts = 3;
-    constexpr int kHttpError = 22;
-    if (*result && result->value().code != 0 && result->value().code != kHttpError && attempts_ < kMaxAttempts) {
-        run_curl();
+    if (!*result && retryable(result->error()) && attempts_ < kMaxAttempts) {
+        send();
         return std::nullopt;
     }
     active_ = false;
-    std::error_code error;
-    if (!header_input_.empty()) {
-        std::filesystem::remove(header_input_, error);
-    }
+    return finish(*result);
+}
 
-    DownloadResult answer;
-    if (!request_.header_output.empty()) {
-        answer.status = parse_http_status(read_text_file(request_.header_output));
+DownloadResult HttpDownloader::finish(const engine::HttpResult& result) {
+    const bool write_failed = sink_->failed || (sink_->file.is_open() && !sink_->file);
+    if (sink_->file.is_open()) {
+        sink_->file.close();
     }
-    if (!*result) {
-        answer.error = result->error() == engine::ProcessError::NotFound
-                               ? "curl is not installed. Wind downloads SDKs with curl; install it and try again."
-                               : "curl could not start.";
+    DownloadResult answer;
+    if (!result) {
+        answer.error = write_failed ? describe(engine::HttpError::SinkAborted) : describe(result.error());
         return answer;
     }
-    if (result->value().code != 0) {
-        // curl's own message (`curl: (6) Could not resolve host: ...`) is the last line it wrote.
-        std::string reason = output_.empty() ? "curl failed with exit code " + std::to_string(result->value().code)
-                                             : output_.back();
-        if (reason.starts_with("curl: ")) {
-            reason.erase(0, 6);
-        }
-        answer.error = std::move(reason);
+    const engine::HttpResponse& response = *result;
+    answer.status = response.status;
+    if (!request_.header_output.empty()) {
+        std::ofstream out(request_.header_output, std::ios::binary | std::ios::trunc);
+        out << format_header_dump(response);
+    }
+    const bool success = response.status >= 200 && response.status < 300;
+    if (!success && !response.body.empty()) {
+        // Only a 2xx body went to the sink: an error page is written here, for a caller that reads it.
+        std::ofstream out(request_.output, std::ios::binary | std::ios::trunc);
+        out << response.body;
+    }
+    if (write_failed) {
+        answer.error = describe(engine::HttpError::SinkAborted);
+    } else if (request_.download && response.status >= 400) {
+        answer.error = "the server answered " + std::to_string(response.status);
     }
     return answer;
 }
 
-void CurlDownloader::cancel() {
+void HttpDownloader::cancel() {
     active_ = false;
+    // Cancelling waits for a sink that is running, so the file can be closed after it.
     call_.cancel();
-    std::error_code error;
-    if (!header_input_.empty()) {
-        std::filesystem::remove(header_input_, error);
+    if (sink_ && sink_->file.is_open()) {
+        sink_->file.close();
     }
 }
 
